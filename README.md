@@ -61,3 +61,35 @@ while True:
 
 ```
 
+```
+import time
+import board
+import adafruit_dht
+
+# Initialize the DHT11 sensor connected to GPIO4
+dht_device = adafruit_dht.DHT11(board.D4)
+
+while True:
+    try:
+        # Read temperature and humidity from the sensor
+        temperature = dht_device.temperature
+        humidity = dht_device.humidity
+
+        if temperature is not None and humidity is not None:
+            print(f"Temp: {temperature:.1f}°C  Humidity: {humidity:.1f}%")
+        else:
+            print("Failed to retrieve data from sensor. Trying again...")
+
+    except RuntimeError as error:
+        # Error handling for common issues like checksum errors
+        print(f"Sensor error: {error}. Retrying...")
+
+    except Exception as error:
+        dht_device.exit()
+        raise error
+
+    # Wait before trying again
+    time.sleep(2)
+
+```
+
