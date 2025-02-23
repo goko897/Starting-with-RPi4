@@ -1,126 +1,97 @@
-```
 import cv2
 import pytesseract
-import os
 import numpy as np
 import datetime
-import time
-import ssl
-import board
-import adafruit_dht
 import paho.mqtt.client as mqtt
 
-# Set Tesseract path (modify for Raspberry Pi)
-pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'  # For Linux (Pi)
-
-# Haar Cascade path
+# Load Haar Cascade for number plate detection
 plateCascade = cv2.CascadeClassifier('/home/pi/haarcascade_russian_plate_number.xml')
 
-# MQTT Configuration
-MQTT_BROKER = "054a692930274fb1a433891ca5b5d023.s1.eu.hivemq.cloud"
-MQTT_PORT = 8883
-MQTT_CLIENT_ID = "pico"
-MQTT_USER = "Priyanshu08"
-MQTT_PASSWORD = "Allsmall88"
+# MQTT Setup
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "iot/number_plate"
 
-# Topics for publishing data
-pub_topic_temperature = "topic/sensors/temperature"
-pub_topic_humidity = "topic/sensors/humidity"
-pub_topic_ocr = "topic/sensors/ocr"
+# Initialize MQTT Client
+client = mqtt.Client()
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
-# DHT11 Sensor Configuration
-DHT_PIN = board.D4
-dht_device = adafruit_dht.DHT11(DHT_PIN, use_pulseio=False)
+# Define valid state codes
+states = {
+    "AN": "Andaman and Nicobar Islands", "AP": "Andhra Pradesh", "AR": "Arunachal Pradesh",
+    "AS": "Assam", "BR": "Bihar", "CG": "Chhattisgarh", "CH": "Chandigarh",
+    "DD": "Daman and Diu", "DL": "Delhi", "GA": "Goa", "GJ": "Gujarat",
+    "HR": "Haryana", "HP": "Himachal Pradesh", "JH": "Jharkhand",
+    "JK": "Jammu and Kashmir", "KA": "Karnataka", "KL": "Kerala",
+    "LD": "Lakshadweep", "MH": "Maharashtra", "MN": "Manipur",
+    "MP": "Madhya Pradesh", "MZ": "Mizoram", "NL": "Nagaland",
+    "OR": "Odisha", "PB": "Punjab", "PY": "Puducherry",
+    "RJ": "Rajasthan", "SK": "Sikkim", "TN": "Tamil Nadu",
+    "TR": "Tripura", "TS": "Telangana", "UK": "Uttarakhand",
+    "UP": "Uttar Pradesh", "WB": "West Bengal"
+}
 
-# Image Processing Paths
-images_folder = "/home/pi/images"
-detected_plates_folder = "/home/pi/Detected_Plates"
-os.makedirs(detected_plates_folder, exist_ok=True)
+# Video capture setup
+cap = cv2.VideoCapture(0)
+cap.set(3, 1000)
+cap.set(4, 480)
+cap.set(10, 150)  # Brightness
 
+minArea = 3000  # Minimum area for detection
+valid_plate_detected = False  # Stop after a valid plate is detected
 
-def setup_mqtt_client():
-    mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv5)
-    mqtt_client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-    mqtt_client.tls_set(ca_certs=None, certfile=None, keyfile=None,
-                         cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, ciphers=None)
-    mqtt_client.connect(MQTT_BROKER, port=MQTT_PORT)
-    mqtt_client.loop_start()
-    print("Connected to MQTT Broker")
-    return mqtt_client
+def preprocess_plate(img):
+    """Enhances the plate image for better OCR results."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 13, 15, 15)
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 9)
+    kernel = np.ones((3, 3), np.uint8)
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return morph
 
+def is_valid_plate(text):
+    """Filters out incorrect OCR results."""
+    text = text.replace(" ", "").upper()
+    return len(text) >= 6 and len(text) <= 10 and text[:2] in states
 
-def read_temperature_humidity():
-    try:
-        temperature_c = dht_device.temperature
-        humidity = dht_device.humidity
-        return temperature_c, humidity
-    except RuntimeError:
-        return None, None
-
-
-def detect_number_plate(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Error loading image {image_path}")
-        return None
+while not valid_plate_detected:
+    success, img = cap.read()
+    if not success:
+        print("❌ Failed to capture image")
+        break
 
     imgGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    plates = plateCascade.detectMultiScale(imgGray, 1.1, 4)
+    numberPlates = plateCascade.detectMultiScale(imgGray, 1.1, 5)
 
-    for (x, y, w, h) in plates:
-        plate_roi = img[y:y + h, x:x + w]
-        plate_gray = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
-        _, plate_thresh = cv2.threshold(plate_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    for (x, y, w, h) in numberPlates:
+        area = w * h
+        if area > minArea:
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(img, "Number Plate", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            imgRoi = img[y:y + h, x:x + w]
+            imgRoiProcessed = preprocess_plate(imgRoi)
+            read = pytesseract.image_to_string(imgRoiProcessed, config='--psm 7')
+            read = "".join([c for c in read if c.isalnum()]).strip()
+            
+            if is_valid_plate(read):
+                state_code = read[:2]
+                state_name = states.get(state_code, "Unknown")
+                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+                
+                print(f"✅ Detected Plate: {read} | State: {state_name} | 📅 Time: {now}")
+                
+                # Publish to MQTT
+                mqtt_message = f"Plate: {read}, State: {state_name}, Time: {now}"
+                client.publish(MQTT_TOPIC, mqtt_message)
+                print(f"📡 Sent to MQTT: {mqtt_message}")
+                
+                valid_plate_detected = True
+                break  # Stop further processing
+    
+    cv2.imshow("Result", img)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-        # OCR Extraction
-        plate_text = pytesseract.image_to_string(plate_thresh, config='--psm 6').strip()
-        plate_text = "".join([c for c in plate_text if c.isalnum()])
-
-        if plate_text:
-            save_file = os.path.join(detected_plates_folder, f"plate_{time.time()}.jpg")
-            cv2.imwrite(save_file, plate_thresh)
-            print(f"Detected Plate: {plate_text}")
-            return plate_text
-
-    return None
-
-
-def publish_sensor_reading(mqtt_client, topic, message):
-    mqtt_client.publish(topic, message)
-    print(f"Published: {topic} → {message}")
-
-
-def main():
-    mqtt_client = setup_mqtt_client()
-
-    try:
-        while True:
-            # Read Temperature & Humidity
-            temperature_c, humidity = read_temperature_humidity()
-            if temperature_c and humidity:
-                publish_sensor_reading(mqtt_client, pub_topic_temperature, f"{temperature_c:.2f}°C")
-                publish_sensor_reading(mqtt_client, pub_topic_humidity, f"{humidity:.2f}%")
-
-            # Process Image from Folder
-            image_files = [f for f in os.listdir(images_folder) if os.path.isfile(os.path.join(images_folder, f))]
-            if image_files:
-                random_image = os.path.join(images_folder, random.choice(image_files))
-                plate_number = detect_number_plate(random_image)
-
-                if plate_number:
-                    publish_sensor_reading(mqtt_client, pub_topic_ocr, f"Plate: {plate_number}")
-
-            time.sleep(5)
-
-    except KeyboardInterrupt:
-        print("Exiting Program")
-
-    finally:
-        mqtt_client.loop_stop()
-        mqtt_client.disconnect()
-        print("Disconnected from MQTT")
-
-
-if __name__ == "__main__":
-    main()
-```
+cap.release()
+cv2.destroyAllWindows()
+client.disconnect()
