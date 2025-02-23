@@ -1,27 +1,4 @@
 ```
-Steps to Integrate:
-Ensure Raspberry Pi 4 is set up with MQTT
-
-Install necessary dependencies on the Pi:
-bash
-Copy
-Edit
-sudo apt update
-sudo apt install python3-opencv tesseract-ocr libtesseract-dev
-pip install paho-mqtt adafruit-circuitpython-dht
-Ensure tesseract-ocr is installed and set the correct path in your script.
-Modify the Number Plate Detection Code
-
-Integrate MQTT to send the detected plate number.
-Remove infinite looping in the script to process one image at a time.
-Modify MQTT Script
-
-Add a function to capture and process images using OpenCV.
-Send the OCR result to MQTT.
-Updated Combined Code
-python
-Copy
-Edit
 import cv2
 import pytesseract
 import os
@@ -146,21 +123,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-How This Works
-Connects Raspberry Pi to MQTT Broker.
-Reads temperature and humidity from the DHT11 sensor.
-Selects a random image from the folder and detects number plates.
-Extracts plate number using Tesseract OCR.
-Sends all data to MQTT topics:
-Temperature (topic/sensors/temperature)
-Humidity (topic/sensors/humidity)
-Number Plate (topic/sensors/ocr)
-Run This Code on Raspberry Pi
-Ensure MQTT, OpenCV, and Tesseract are installed.
-Modify paths for images and Haar cascade.
-Run the script:
-bash
-Copy
-Edit
-python3 number_plate_mqtt.py
 ```
