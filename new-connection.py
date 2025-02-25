@@ -11,31 +11,16 @@ import board
 import adafruit_dht
 import pytesseract
 import paho.mqtt.client as mqtt
-import logging
-
-# Set up logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/home/rpi/Desktop/ocr/mqtt_debug.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("RPI_MQTT")
 
 # MQTT Configuration
 MQTT_BROKER = "192.168.47.115"
 MQTT_PORT = 1883
-MQTT_CLIENT_ID = "rpi_server"  # Fixed typo in client ID
-MQTT_USERNAME = None  # Add if your broker requires authentication
-MQTT_PASSWORD = None  # Add if your broker requires authentication
+MQTT_CLIENT_ID = "rpi_sever"
 
-# MQTT Topics - Updated based on error message
-# Changed to match the expected format in the HiveMQ connection configuration
-PUB_TOPIC = "devices/sensor.test:hivelab"  # Changed from "topic/sensors" to match enforcement filters
+# MQTT Topics
+PUB_TOPIC = "org.eclipse.ditto/your-device-path/things/live/messages"
 
-# DHT Sensor Configuration
+# DHT Sensor Configuration - Updated for adafruit_dht
 dht_device = adafruit_dht.DHT11(board.D4)
 
 # OCR Configuration
@@ -66,93 +51,60 @@ states = {
     "UP": "Uttar Pradesh", "WB": "West Bengal"
 }
 
-# MQTT Callback functions for debugging
-def on_connect(client, userdata, flags, rc):
-    connection_responses = {
-        0: "Connection successful",
-        1: "Connection refused - incorrect protocol version",
-        2: "Connection refused - invalid client identifier",
-        3: "Connection refused - server unavailable",
-        4: "Connection refused - bad username or password",
-        5: "Connection refused - not authorized"
-    }
-    response = connection_responses.get(rc, f"Unknown response code: {rc}")
-    logger.info(f"Connected to MQTT Broker with result code: {rc} - {response}")
-    
-def on_disconnect(client, userdata, rc):
-    logger.warning(f"Disconnected from MQTT Broker with result code: {rc}")
-
-def on_publish(client, userdata, mid):
-    logger.debug(f"Message {mid} published successfully")
-
-def on_log(client, userdata, level, buf):
-    logger.debug(f"MQTT Log: {buf}")
-
-# Setup MQTT Client with enhanced error handling
+# Setup MQTT Client
 def setup_mqtt_client():
     mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv311)
     
-    # Set up callback functions
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_disconnect = on_disconnect
-    mqtt_client.on_publish = on_publish
-    mqtt_client.on_log = on_log
-    
-    # Add authentication if needed
-    if MQTT_USERNAME and MQTT_PASSWORD:
-        mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    
-    try:
-        logger.info(f"Connecting to MQTT Broker at {MQTT_BROKER}:{MQTT_PORT}")
-        mqtt_client.connect(MQTT_BROKER, port=MQTT_PORT)
-        mqtt_client.loop_start()
-        logger.info("Connected to the HiveMQ Broker")
-        return mqtt_client
-    except Exception as e:
-        logger.error(f"Failed to connect to MQTT Broker: {e}")
-        raise
+    mqtt_client.connect(MQTT_BROKER, port=MQTT_PORT)
+    mqtt_client.loop_start()
+    print("Connected to the HiveMQ Broker")
+    return mqtt_client
 
-# Updated DHT sensor read function
+# Updated DHT sensor read function based on the provided example
 def read_dht_sensor():
     try:
+        # Read temperature and humidity directly from the dht_device object
         temperature = dht_device.temperature
         humidity = dht_device.humidity
         
+        # Convert to float to avoid TypeErrors
         temperature = float(temperature) if temperature is not None else 0.0
         humidity = float(humidity) if humidity is not None else 0.0
         
-        logger.debug(f"DHT Sensor reading: Temperature={temperature}°C, Humidity={humidity}%")
         return temperature, humidity
     
     except RuntimeError as e:
-        logger.warning(f"Error reading DHT sensor: {e}")
-        return 0.0, 0.0
+        # Handle sensor read errors
+        print(f"Error reading DHT sensor: {e}")
+        return 0.0, 0.0  # Return default values to prevent crashes
     except Exception as e:
-        logger.error(f"Unexpected error reading DHT sensor: {e}")
+        print(f"Unexpected error reading DHT sensor: {e}")
         return 0.0, 0.0
 
-# Publish sensor data in structured JSON format - Updated to match expected format in mapping
+# Publish sensor data in structured JSON format
 def publish_sensor_reading(mqtt_client, temperature, humidity, numberplate, number, state, time_stamp):
-    # Updated payload format to match the expected structure in your JavaScript mapping function
+    # Convert sensor readings to appropriate values
+    temperature_value = float(temperature) if temperature is not None else 0.0
+    humidity_value = float(humidity) if humidity is not None else 0.0
+
+    # Prepare the compressed payload format like ESP32
     data = {
-        "temperature": float(temperature) if temperature is not None else 0.0,
-        "humidity": float(humidity) if humidity is not None else 0.0,
-        "numberplate": numberplate if numberplate else "N/A",
-        "number": number if number else 0,
-        "state": state if state else "Unknown",
-        "time": time_stamp if time_stamp else "N/A",
-        "thingId": "sensor.test:hivelab"
+        "temp": temperature_value,
+        "gaz": humidity_value,
+        "alert": 1 if numberplate else 0,  # Alert LED turns on if a plate is detected
+        "thingId": "sensor.test:hivelab",
+        "plate_data": {
+            "numberplate": numberplate if numberplate else "N/A",
+            "number": number if number else 0,
+            "state": state if state else "Unknown",
+            "time": time_stamp if time_stamp else "N/A"
+        }
     }
-    
-    try:
-        payload = json.dumps(data)
-        result = mqtt_client.publish(PUB_TOPIC, payload, qos=1)
-        if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logger.info(f"Published to {PUB_TOPIC}: {payload}")
-        else:
-            logger.error(f"Failed to publish message, error code: {result.rc}")
-    except Exception as e:
-        logger.error(f"Error publishing message: {e}")
+
+    # Publish the JSON payload to the MQTT broker
+    mqtt_client.publish(PUB_TOPIC, json.dumps(data))
+    print(f"Published to {PUB_TOPIC}: {json.dumps(data, indent=4)}")
+
     
 # Process Image for OCR
 def detect_license_plate():
@@ -160,11 +112,11 @@ def detect_license_plate():
 
     image_files = [f for f in os.listdir(images_folder) if os.path.isfile(os.path.join(images_folder, f))]
     if not image_files:
-        logger.warning("No images found in the folder.")
+        print("No images found in the folder.")
         return None, None, None, None
 
     image_path = os.path.join(images_folder, random.choice(image_files))
-    logger.info(f"Processing image: {image_path}")
+    print(f"Processing image: {image_path}")
 
     try:
         img = cv2.imread(image_path)
@@ -202,7 +154,7 @@ def detect_license_plate():
                     now = datetime.datetime.now()
                     date_time = now.strftime('%Y-%m-%d %H:%M')
 
-                    logger.info(f"Detected Plate: {read} | State: {state_name} | Time: {date_time}")
+                    print(f"Detected Plate: {read} | State: {state_name} | Time: {date_time}")
 
                     save_file = os.path.join(detected_plates_folder, f"plate_{count}.jpg")
                     cv2.imwrite(save_file, imgRoiThresh)
@@ -210,52 +162,34 @@ def detect_license_plate():
 
                     return read, len(read), state_name, date_time
 
-        logger.info("No license plates detected in the image.")
         return None, None, None, None
 
     except Exception as e:
-        logger.error(f"Error processing image: {e}")
+        print(f"Error processing image: {e}")
         return None, None, None, None
 
 # Main Function
 def main():
+    mqtt_client = setup_mqtt_client()
+
     try:
-        mqtt_client = setup_mqtt_client()
-        logger.info("Monitoring temperature, humidity, and detecting license plates. Press CTRL+C to exit.")
+        print("Monitoring temperature, humidity, and detecting license plates. Press CTRL+C to exit.")
 
         while True:
-            try:
-                temperature, humidity = read_dht_sensor()
-                numberplate, number, state, time_stamp = detect_license_plate()
-                
-                publish_sensor_reading(mqtt_client, temperature, humidity, numberplate, number, state, time_stamp)
-                
-                # Sleep with error handling in case of keyboard interrupt
-                time.sleep(5)
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                time.sleep(5)  # Continue with next iteration after error
+            temperature, humidity = read_dht_sensor()
+            numberplate, number, state, time_stamp = detect_license_plate()
+            
+            publish_sensor_reading(mqtt_client, temperature, humidity, numberplate, number, state, time_stamp)
+            time.sleep(5)
 
     except KeyboardInterrupt:
-        logger.info("Stopping the program due to keyboard interrupt")
-    except Exception as e:
-        logger.critical(f"Critical error in main function: {e}")
+        print("Stopping the program")
     finally:
-        try:
-            # Clean up
-            dht_device.exit()  # Properly close the DHT device
-            logger.info("DHT device closed")
-        except Exception as e:
-            logger.error(f"Error closing DHT device: {e}")
-            
-        try:
-            mqtt_client.loop_stop()
-            mqtt_client.disconnect()
-            logger.info("Disconnected from the MQTT broker")
-        except Exception as e:
-            logger.error(f"Error disconnecting from MQTT broker: {e}")
+        # Clean up
+        dht_device.exit()  # Properly close the DHT device
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        print("Disconnected from the MQTT broker")
 
 if __name__ == "__main__":
     main()
